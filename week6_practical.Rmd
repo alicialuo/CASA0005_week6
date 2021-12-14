@@ -203,4 +203,479 @@ K <- BluePlaquesSub.ppp %>%
   plot()
 ```
 
+```{r}
+Kval <- as.data.frame(Kest(BluePlaquesSub.ppp, correction = "border"))
+```
+
+___________________________________________________
+
+
+
+
+```{r}
+library(raster)
+library(fpc)
+```
+
+```{r}
+st_geometry(BoroughMap)
+```
+
+
+```{r}
+#first extract the points from the spatial points data frame
+BluePlaquesSubPoints <- BluePlaquesSub %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+db <- BluePlaquesSubPoints %>%
+  fpc::dbscan(.,eps = 700, MinPts = 4)
+
+#now plot the results
+plot(db, BluePlaquesSubPoints, main = "DBSCAN Output", frame = F)
+plot(BoroughMap$geometry, add=T)
+```
+
+Method for determining the optimal eps value
+
+The method proposed here consists of computing the k-nearest neighbor distances in a matrix of points.
+
+The idea is to calculate, the average of the distances of every point to its k nearest neighbors. The value of k will be specified by the user and corresponds to MinPts.
+
+Next, these k-distances are plotted in an ascending order. The aim is to determine the “knee”, which corresponds to the optimal eps parameter.
+
+A knee corresponds to a threshold where a sharp change occurs along the k-distance curve.
+
+The function kNNdistplot() [in dbscan package] can be used to draw the k-distance plot:
+```{r}
+# used to find suitable eps value based on the knee in plot
+# k is no of nearest neighbours used, use min points
+library(dbscan)
+
+BluePlaquesSubPoints%>%
+  dbscan::kNNdistplot(.,k=4)
+
+#three knee / three cluster
+#https://www.datanovia.com/en/lessons/dbscan-density-based-clustering-essentials/
+```
+
+
+```{r}
+library(ggplot2)
+```
+
+
+```{r}
+db
+```
+
+```{r}
+db$cluster
+```
+
+```{r}
+BluePlaquesSubPoints<- BluePlaquesSubPoints %>%
+  mutate(dbcluster=db$cluster)
+```
+
+```{r}
+chulls <- BluePlaquesSubPoints %>%
+  group_by(dbcluster) %>%
+  dplyr::mutate(hull = 1:n(),
+  hull = factor(hull, chull(coords.x1, coords.x2)))%>%
+  arrange(hull)
+
+#chulls2 <- ddply(BluePlaquesSubPoints, .(dbcluster), 
+              #  function(df) df[chull(df$coords.x1, df$coords.x2), ])
+```
+
+As 0 isn’t actually a cluster (it’s all points that aren’t in a cluster) drop it from the dataframe
+```{r}
+chulls <- chulls %>%
+  filter(dbcluster >=1)
+```
+
+```{r}
+dbplot <- ggplot(data=BluePlaquesSubPoints, 
+                 aes(coords.x1,coords.x2, colour=dbcluster, fill=dbcluster)) 
+#add the points in
+dbplot <- dbplot + geom_point()
+#now the convex hulls
+dbplot <- dbplot + geom_polygon(data = chulls, 
+                                aes(coords.x1,coords.x2, group=dbcluster), 
+                                alpha = 0.5) 
+#now plot, setting the coordinates to scale correctly and as a black and white plot 
+#(just for the hell of it)...
+dbplot + theme_bw() + coord_equal()
+```
+
+```{r}
+###add a basemap
+##First get the bbox in lat long for Harrow
+HarrowWGSbb <- Harrow %>%
+  st_transform(., 4326)%>%
+  st_bbox()
+```
+
+
+```{r}
+library(OpenStreetMap)
+
+basemap <- OpenStreetMap::openmap(c(51.5549876,-0.4040502),c(51.6405356,-0.2671315),
+                         zoom=NULL,
+                         "stamen-toner")
+
+  # convert the basemap to British National Grid
+basemap_bng <- openproj(basemap, projection="+init=epsg:27700")
+```
+
+```{r}
+#autoplot(basemap_bng) sometimes works
+autoplot.OpenStreetMap(basemap_bng)+ 
+  geom_point(data=BluePlaquesSubPoints, 
+             aes(coords.x1,coords.x2, 
+                 colour=dbcluster, 
+                 fill=dbcluster)) + 
+  geom_polygon(data = chulls, 
+               aes(coords.x1,coords.x2, 
+                   group=dbcluster,
+                   fill=dbcluster), 
+               alpha = 0.5)  
+```
+
+-------------------------
+Moran's I/LISA
+
+```{r}
+library(here)
+library(janitor)
+library(dplyr)
+#read the ward data in
+LondonWards <- st_read(here::here("Data", "statistical-gis-boundaries-london", "ESRI","London_Ward.shp"))
+```
+
+```{r}
+LondonWardsMerged <- st_read(here::here("Data", 
+                                        "statistical-gis-boundaries-london", 
+                                        #"statistical-gis-boundaries-london", 
+                                        "ESRI",
+                                        "London_Ward_CityMerged.shp"))%>%
+  st_transform(.,27700)
+```
+
+```{r}
+
+WardData <- read_csv("/Users/luomengjiao/Desktop/CASA0005/week6/week6practical/Data/ward-profiles-excel-version.csv",na = c("NA", "n/a"),locale = locale(encoding = "latin1")) %>%
+  clean_names()
+
+LondonWardsMerged <- LondonWardsMerged %>% 
+  left_join(WardData, 
+            by = c("GSS_CODE" = "new_code"))%>%
+  dplyr::distinct(GSS_CODE, .keep_all = T)%>%
+  dplyr::select(GSS_CODE, ward_name, average_gcse_capped_point_scores_2014)
+```
+
+```{r}
+#have a look to check that it's 
+#in the right projection
+st_crs(LondonWardsMerged)
+```
+
+
+```{r}
+tmap_mode("view")
+tm_shape(LondonWardsMerged) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaques) +
+  tm_dots(col = "blue")
+```
+
+```{r}
+summary(BluePlaques)
+```
+
+```{r}
+BluePlaquesSub <- BluePlaques[LondonWardsMerged,]
+
+tm_shape(LondonWardsMerged) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaquesSub) +
+  tm_dots(col = "blue")
+```
+
+```{r}
+library(sf)
+points_sf_joined <- LondonWardsMerged%>%
+  st_join(BluePlaquesSub)%>%
+  add_count(ward_name)%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density=n/area)%>%
+  #select density and some other variables 
+  dplyr::select(density, ward_name, gss_code, n, average_gcse_capped_point_scores_2014)
+```
+
+```{r}
+points_sf_joined<- points_sf_joined %>%                    
+  group_by(gss_code) %>%         
+  summarise(density = first(density),
+          wardname= first(ward_name),
+          plaquecount= first(n))
+
+tm_shape(points_sf_joined) +
+    tm_polygons("density",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("wardname", "density"),
+        title="Blue Plaque Density")
+```
+
+```{r}
+library(spdep)
+```
+
+
+
+find center of londonward
+
+```{r}
+coordsW <- points_sf_joined%>%
+  st_centroid()%>%
+  st_geometry()
+  
+plot(coordsW,axes=TRUE)
+```
+
+
+
+
+
+A note on spatial weight matrices
+
+If the features share a boundary they are contiguous, this can also be classed as only common boundaries — a rook (like chess a rook can move forwards or side wards) or any point in common (e.g. corners / other boundaries) — a queen (like chess a queen can move forwards, backwards or on a diagonal).
+
+Alternatively instead of using contiguous relationships you can use distance based relationships. This is frequently done with k nearest neighbours in which k is set to the closest observations. e.g. K=3 means the three closest observations.
+
+In the first instance we must create a neighbours list — which is a list of all the neighbours. To do so we will use poly2nb() with the argument queen=T saying we want a to use Queens case. Let’s see a summary of the output
+```{r}
+#create a neighbours list
+LWard_nb <- points_sf_joined %>%
+  poly2nb(., queen=T)
+```
+
+```{r}
+summary(LWard_nb)
+```
+
+```{r}
+#plot them
+plot(LWard_nb, st_geometry(coordsW), col="red")
+#add a map underneath
+plot(points_sf_joined$geometry, add=T)
+```
+From the weights list we must now make a spatial weight matrix. This makes a matrix the size of the number of neighbourhoods with values indicating if the elements in the rows are a neighbour or not. The style of weight is especially important here:
+
+B is the basic binary coding (1/0)
+W is row standardised (sums over all links to n)
+C is globally standardised (sums over all links to n)
+U is equal to C divided by the number of neighbours (sums over all links to unity)
+S is the variance-stabilizing coding scheme proposed by Tiefelsdorf et al. 1999, p. 167-168 (sums over all links to n).
+To understand this further let’s start with binary.
+```{r}
+#create a spatial weights matrix from these weights
+Lward.lw <- LWard_nb %>%
+  nb2mat(., style="B")
+
+sum(Lward.lw)
+```
+
+Summing the binary (1/0) shows that we have 3680 neighbours. Now if we were to do global standardisation this would mean dividing our 625 wards by the total number of neighbours meaning each spatial weight has a value of 0.169.
+
+Alternatively we can do row standardisation where 1 is divided by the sum of the number of neighbours in each row. For example, row 1 here sums to 6, meaning each weight would be 0.166 in row 1 only.
+```{r}
+sum(Lward.lw[,1])
+```
+
+```{r}
+Lward.lw <- LWard_nb %>%
+  nb2listw(., style="C")
+```
+
+```{r}
+I_LWard_Global_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  moran.test(., Lward.lw)
+
+I_LWard_Global_Density
+```
+
+```{r}
+C_LWard_Global_Density <- 
+  points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  geary.test(., Lward.lw)
+
+C_LWard_Global_Density
+```
+
+```{r}
+G_LWard_Global_Density <- 
+  points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  globalG.test(., Lward.lw)
+
+G_LWard_Global_Density
+```
+
+So the global statistics are indicating that we have spatial autocorrelation of Blue Plaques in London:
+
+The Moran’s I statistic = 0.67 (remember 1 = clustered, 0 = no pattern, -1 = dispersed) which shows that we have some distinctive clustering
+
+The Geary’s C statistic = 0.41 (remember Geary’s C falls between 0 and 2; 1 means no spatial autocorrelation, <1 - positive spatial autocorrelation or similar values clustering, >1 - negative spatial autocorreation or dissimilar values clustering) which shows that similar values are clustering
+
+The General G statistic = G > expected, so high values are tending to cluster.
+
+We can now also calculate local versions of the Moran’s I statistic (for each Ward) and a Getis Ord  
+G
+∗
+i
+ statistic to see where we have hot-spots…
+
+```{r}
+#use the localmoran function to generate I for each ward in the city
+
+I_LWard_Local_count <- points_sf_joined %>%
+  pull(plaquecount) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+I_LWard_Local_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+#what does the output (the localMoran object) look like?
+slice_head(I_LWard_Local_Density, n=5)
+```
+
+```{r}
+points_sf_joined <- points_sf_joined %>%
+  mutate(plaque_count_I = as.numeric(I_LWard_Local_count$Ii))%>%
+  mutate(plaque_count_Iz =as.numeric(I_LWard_Local_count$Z.Ii))%>%
+  mutate(density_I =as.numeric(I_LWard_Local_Density$Ii))%>%
+  mutate(density_Iz =as.numeric(I_LWard_Local_Density$Z.Ii))
+```
+
+```{r}
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+```
+Now create a new diverging colour brewer palette and reverse the order using rev() (reverse) so higher values correspond to red
+```{r}
+MoranColours<- rev(brewer.pal(8, "RdGy"))
+```
+
+```{r}
+tm_shape(points_sf_joined) +
+    tm_polygons("plaque_count_Iz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, Blue Plaques in London")
+```
+
+```{r}
+Gi_LWard_Local_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  localG(., Lward.lw)
+
+head(Gi_LWard_Local_Density)
+```
+
+```{r}
+points_sf_joined <- points_sf_joined %>%
+  mutate(density_G = as.numeric(Gi_LWard_Local_Density))
+```
+
+```{r}
+GIColours<- rev(brewer.pal(8, "RdBu"))
+
+#now plot on an interactive map
+tm_shape(points_sf_joined) +
+    tm_polygons("density_G",
+        style="fixed",
+        breaks=breaks1,
+        palette=GIColours,
+        midpoint=NA,
+        title="Gi*, Blue Plaques in London")
+```
+
+```{r}
+#use head to see what other variables are in the data file
+
+slice_head(points_sf_joined, n=2)
+```
+
+```{r}
+Datatypelist <- LondonWardsMerged %>% 
+  st_drop_geometry()%>%
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+
+```{r}
+I_LWard_Local_GCSE <- LondonWardsMerged %>%
+  arrange(GSS_CODE)%>%
+  pull(average_gcse_capped_point_scores_2014) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+points_sf_joined <- points_sf_joined %>%
+  arrange(gss_code)%>%
+  mutate(GCSE_LocIz = as.numeric(I_LWard_Local_GCSE$Z.Ii))
+
+
+tm_shape(points_sf_joined) +
+    tm_polygons("GCSE_LocIz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, GCSE Scores")
+```
+
+```{r}
+G_LWard_Local_GCSE <- LondonWardsMerged %>%
+  dplyr::arrange(GSS_CODE)%>%
+  dplyr::pull(average_gcse_capped_point_scores_2014) %>%
+  as.vector()%>%
+  localG(., Lward.lw)
+
+points_sf_joined <- points_sf_joined %>%
+  dplyr::arrange(gss_code)%>%
+  dplyr::mutate(GCSE_LocGiz = as.numeric(G_LWard_Local_GCSE))
+
+tm_shape(points_sf_joined) +
+    tm_polygons("GCSE_LocGiz",
+        style="fixed",
+        breaks=breaks1,
+        palette=GIColours,
+        midpoint=NA,
+        title="Gi*, GCSE Scores")
+```
 
